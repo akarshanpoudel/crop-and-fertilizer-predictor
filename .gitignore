@@ -1,0 +1,20 @@
+# Ignore Python cache and environment files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+.env
+
+# Ignore IDE settings
+.vscode/
+.idea/
+
+# Ignore Machine Learning Model and Encoder files 
+*.pkl
+
+# Ignore local system files
+.DS_Store
+Thumbs.db
