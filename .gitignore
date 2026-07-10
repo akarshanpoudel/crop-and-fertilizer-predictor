@@ -12,8 +12,6 @@ ENV/
 .vscode/
 .idea/
 
-# Ignore Machine Learning Model and Encoder files 
-*.pkl
 
 # Ignore local system files
 .DS_Store
