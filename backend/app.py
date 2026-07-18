@@ -25,8 +25,34 @@ import joblib
 import numpy as np
 import os
 from datetime import datetime
+from flask_sqlalchemy import SQLAlchemy
+from dotenv import load_dotenv
 
 app = Flask(__name__)
+load_dotenv()
+
+db_user = os.getenv("MYSQLUSER")
+db_pass = os.getenv("MYSQLPASSWORD")
+db_host = os.getenv("MYSQLHOST")
+db_port = os.getenv("MYSQLPORT")
+db_name = os.getenv("MYSQLDATABASE")
+
+app.config["SQLALCHEMY_DATABASE_URI"] = (
+    f"mysql+mysqlconnector://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+
+class SensorReading(db.Model):
+    __tablename__ = "sensor_readings"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    temperature = db.Column(db.Float, nullable=False)
+    humidity = db.Column(db.Float, nullable=False)
+    soil_moisture = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -43,13 +69,13 @@ def safe_load(filename):
     return None
 
 print("Loading models...")
-crop_model   = safe_load("crop_model.pkl")
-crop_le      = safe_load("crop_label_encoder.pkl")
+crop_model   = safe_load("models/crop_model.pkl")
+crop_le      = safe_load("models/crop_label_encoder.pkl")
 
-fert_model   = safe_load("fertilizer_model.pkl")
-soil_le      = safe_load("soil_type_encoder.pkl")
-crop_type_le = safe_load("crop_type_encoder.pkl")
-fert_le      = safe_load("fertilizer_label_encoder.pkl")
+fert_model   = safe_load("models/fertilizer_model.pkl")
+soil_le      = safe_load("models/soil_type_encoder.pkl")
+crop_type_le = safe_load("models/crop_type_encoder.pkl")
+fert_le      = safe_load("models/fertilizer_label_encoder.pkl")
 print("Models loaded (or safely bypassed).")
 
 # Safely extract classes if the encoders loaded successfully
@@ -57,12 +83,12 @@ SOIL_TYPES = list(soil_le.classes_) if soil_le else []
 CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
 
 # In-memory latest sensor snapshot (written by ESP32, read by Streamlit) 
-_sensor_snapshot = {
-    "temperature":   None,
-    "humidity":      None,
-    "soil_moisture": None,   
-    "timestamp":     None,
-}
+# _sensor_snapshot = {
+#     "temperature":   None,
+#     "humidity":      None,
+#     "soil_moisture": None,   
+#     "timestamp":     None,
+# }
 
 
 #  Health check 
@@ -94,15 +120,17 @@ def receive_sensor_data():
             "required_fields": ["temperature", "humidity", "soil_moisture"],
         }), 400
 
-    _sensor_snapshot.update({
-        "temperature":   temp,
-        "humidity":      humidity,
-        "soil_moisture": moisture,
-        "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    })
+    reading = SensorReading(
+        temperature=temp,
+        humidity=humidity,
+        soil_moisture=moisture,
+    )
+    db.session.add(reading)
+    db.session.commit()
 
-    print(f"[Sensor] T={temp}°C  H={humidity}%  SM={moisture}%")
+    print(f"[Sensor] T={temp}°C  H={humidity}%  SM={moisture}%  (saved as id={reading.id})")
     return jsonify({"status": "ok"})
+
 
 
 @app.route("/sensor_data", methods=["GET"])
@@ -111,9 +139,17 @@ def get_sensor_data():
     Called by Streamlit to fetch the latest DHT22 + moisture readings.
     Returns: { temperature, humidity, soil_moisture, timestamp }
     """
-    if _sensor_snapshot["temperature"] is None:
+    latest = SensorReading.query.order_by(SensorReading.id.desc()).first()
+
+    if latest is None:
         return jsonify({"error": "No sensor data received yet from ESP32"}), 404
-    return jsonify(_sensor_snapshot)
+
+    return jsonify({
+        "temperature":   latest.temperature,
+        "humidity":      latest.humidity,
+        "soil_moisture": latest.soil_moisture,
+        "timestamp":     latest.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 
 #  Step 1: Crop prediction 
@@ -185,11 +221,12 @@ def predict_fertilizer():
             moisture_source = "request_body"
         except (TypeError, ValueError):
             return jsonify({"error": "'moisture' must be a number (0–100)"}), 400
-    elif _sensor_snapshot["soil_moisture"] is not None:
-        moisture        = _sensor_snapshot["soil_moisture"]
+    elif SensorReading.query.order_by(SensorReading.id.desc()).first() is not None:
+        latest          = SensorReading.query.order_by(SensorReading.id.desc()).first()
+        moisture        = latest.soil_moisture
         moisture_source = "esp32_sensor"
         print(f"[Fertilizer] Using ESP32 soil_moisture={moisture}% "
-              f"(snapshot @ {_sensor_snapshot['timestamp']})")
+              f"(reading id={latest.id} @ {latest.timestamp})")
     else:
         return jsonify({
             "error": (
