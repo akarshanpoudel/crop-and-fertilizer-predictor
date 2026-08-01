@@ -17,6 +17,7 @@ Starts on http://0.0.0.0:5000
 
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import joblib
 import numpy as np
@@ -41,6 +42,16 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
+# Nepal Standard Time (UTC+5:45) — used for all recommendation_logs /
+# sensor_readings timestamps instead of UTC, so DB times match local time.
+NEPAL_TZ = ZoneInfo("Asia/Kathmandu")
+
+
+def nepal_now():
+    # naive datetime (tzinfo stripped) so it stores cleanly in a MySQL
+    # DATETIME column without timezone-aware/naive comparison issues
+    return datetime.now(NEPAL_TZ).replace(tzinfo=None)
+
 
 # ------------------------------------------------------------------------------
 # Database Models
@@ -54,7 +65,7 @@ class SensorReading(db.Model):
     temperature = db.Column(db.Float, nullable=False)
     humidity = db.Column(db.Float, nullable=False)
     soil_moisture = db.Column(db.Float, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=nepal_now)
 
 
 # Table 2: Complete Pipeline Recommendation History
@@ -75,7 +86,7 @@ class RecommendationLog(db.Model):
     soil_type = db.Column(db.String(50), nullable=True)
     predicted_crop = db.Column(db.String(100), nullable=True)
     recommended_fertilizer = db.Column(db.String(100), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=nepal_now)
 
 
 # ------------------------------------------------------------------------------

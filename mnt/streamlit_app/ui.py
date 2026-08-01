@@ -551,7 +551,7 @@ else:
         <div class="result-box">
             <div class="result-label">Recommended Fertilizer</div>
             <div class="result-value">{fertilizer}</div>
-            {f'<div class="badge-db">🗄️ Saved to MySQL Log ID #{log_id}</div>' if log_id else ''}
+            
         </div>
         """, unsafe_allow_html=True)
 
