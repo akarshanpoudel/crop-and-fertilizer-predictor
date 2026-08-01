@@ -1,36 +1,33 @@
 """
-AgroSense Flask API  v2 — Soil Moisture Integration (no database)
-─────────────────────────────────────────────────────────────────
-Changes from v1:
-  • ESP32 now sends soil_moisture alongside temperature & humidity
-  • /sensor_data  stores + returns soil_moisture
-  • /predict/fertilizer auto-fills moisture from the sensor snapshot
-    when the Streamlit caller doesn't supply it explicitly
-
+AgroSense Flask API v2 — Soil Moisture & Recommendation Logging Integration
+───────────────────────────────────────────────────────────────────────────
 Endpoints:
-    GET  /health             → status check + valid soil/crop type lists
+    GET  /health            → status check + valid soil/crop type lists
     POST /sensor_data        → ESP32 pushes temperature, humidity, soil_moisture
     GET  /sensor_data        → Streamlit fetches latest sensor readings
-    POST /predict/crop       → predicts crop from soil + climate inputs
-    POST /predict/fertilizer → predicts fertilizer; moisture from body or sensor
+    POST /predict/crop       → predicts crop & creates ONE recommendation_logs row
+    POST /predict/fertilizer → predicts fertilizer & COMPLETES that same row
+                                — one INSERT per completed cycle, nothing written on Step 1
 
 Run:
-    pip install flask joblib scikit-learn numpy
+    pip install flask joblib scikit-learn numpy flask-sqlalchemy mysql-connector-python python-dotenv
     python app.py
 Starts on http://0.0.0.0:5000
 """
 
-from flask import Flask, request, jsonify
-import joblib
-import numpy as np
 import os
 from datetime import datetime
-from flask_sqlalchemy import SQLAlchemy
+
+import joblib
+import numpy as np
 from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 load_dotenv()
 
+# MySQL Configuration
 db_user = os.getenv("MYSQLUSER")
 db_pass = os.getenv("MYSQLPASSWORD")
 db_host = os.getenv("MYSQLHOST")
@@ -44,6 +41,12 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
+
+# ------------------------------------------------------------------------------
+# Database Models
+# ------------------------------------------------------------------------------
+
+# Table 1: Live ESP32 Sensor Readings
 class SensorReading(db.Model):
     __tablename__ = "sensor_readings"
 
@@ -53,67 +56,82 @@ class SensorReading(db.Model):
     soil_moisture = db.Column(db.Float, nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+
+# Table 2: Complete Pipeline Recommendation History
+# One row == one complete prediction cycle. Written once, by /predict/fertilizer,
+# only after both crop and fertilizer predictions are known.
+class RecommendationLog(db.Model):
+    __tablename__ = "recommendation_logs"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    nitrogen = db.Column(db.Float, nullable=False)
+    phosphorus = db.Column(db.Float, nullable=False)
+    potassium = db.Column(db.Float, nullable=False)
+    ph = db.Column(db.Float, nullable=False)
+    rainfall = db.Column(db.Float, nullable=False)
+    temperature = db.Column(db.Float, nullable=False)
+    humidity = db.Column(db.Float, nullable=False)
+    soil_moisture = db.Column(db.Float, nullable=False)
+    soil_type = db.Column(db.String(50), nullable=True)
+    predicted_crop = db.Column(db.String(100), nullable=True)
+    recommended_fertilizer = db.Column(db.String(100), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ------------------------------------------------------------------------------
+# ML Model Loading
+# ------------------------------------------------------------------------------
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 
-# This prevents the app from crashing if a .pkl file is missing or has a version mismatch
 def safe_load(filename):
     filepath = os.path.join(BASE, filename)
     if os.path.exists(filepath):
         try:
             return joblib.load(filepath)
-        except Exception as e:
+        except (OSError, ValueError, EOFError) as e:
             print(f"[Warning] Could not load {filename}: {e}")
     else:
         print(f"[Warning] File not found: {filename}")
     return None
 
-print("Loading models...")
-crop_model   = safe_load("models/crop_model.pkl")
-crop_le      = safe_load("models/crop_label_encoder.pkl")
 
-fert_model   = safe_load("models/fertilizer_model.pkl")
-soil_le      = safe_load("models/soil_type_encoder.pkl")
+print("Loading models...")
+crop_model = safe_load("models/crop_model.pkl")
+crop_le = safe_load("models/crop_label_encoder.pkl")
+
+fert_model = safe_load("models/fertilizer_model.pkl")
+soil_le = safe_load("models/soil_type_encoder.pkl")
 crop_type_le = safe_load("models/crop_type_encoder.pkl")
-fert_le      = safe_load("models/fertilizer_label_encoder.pkl")
+fert_le = safe_load("models/fertilizer_label_encoder.pkl")
 print("Models loaded (or safely bypassed).")
 
-# Safely extract classes if the encoders loaded successfully
 SOIL_TYPES = list(soil_le.classes_) if soil_le else []
 CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
 
-# In-memory latest sensor snapshot (written by ESP32, read by Streamlit) 
-# _sensor_snapshot = {
-#     "temperature":   None,
-#     "humidity":      None,
-#     "soil_moisture": None,   
-#     "timestamp":     None,
-# }
 
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
 
-#  Health check 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status":     "ok",
+        "status": "ok",
         "soil_types": SOIL_TYPES,
         "crop_types": CROP_TYPES,
     })
 
 
-#  Sensor data — ESP32 POSTs here; Streamlit GETs here 
 @app.route("/sensor_data", methods=["POST"])
 def receive_sensor_data():
-    """
-    Called by ESP32 over WiFi every 30 s.
-    Expects JSON: { "temperature": 28.4, "humidity": 65.2, "soil_moisture": 42.0 }
-    soil_moisture is a % value (0–100) mapped from the ADC reading.
-    """
+    """ESP32 posts telemetry every 30s"""
     data = request.get_json(force=True, silent=True) or {}
     try:
-        temp     = round(float(data["temperature"]),   2)
-        humidity = round(float(data["humidity"]),      2)
-        moisture = round(float(data["soil_moisture"]), 2)   
+        temp = round(float(data["temperature"]), 2)
+        humidity = round(float(data["humidity"]), 2)
+        moisture = round(float(data["soil_moisture"]), 2)
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({
             "error": f"Missing or invalid field: {e}",
@@ -132,53 +150,47 @@ def receive_sensor_data():
     return jsonify({"status": "ok"})
 
 
-
 @app.route("/sensor_data", methods=["GET"])
 def get_sensor_data():
-    """
-    Called by Streamlit to fetch the latest DHT22 + moisture readings.
-    Returns: { temperature, humidity, soil_moisture, timestamp }
-    """
+    """Streamlit fetches latest sensor readings"""
     latest = SensorReading.query.order_by(SensorReading.id.desc()).first()
 
     if latest is None:
         return jsonify({"error": "No sensor data received yet from ESP32"}), 404
 
     return jsonify({
-        "temperature":   latest.temperature,
-        "humidity":      latest.humidity,
+        "temperature": latest.temperature,
+        "humidity": latest.humidity,
         "soil_moisture": latest.soil_moisture,
-        "timestamp":     latest.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": latest.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
     })
 
 
-#  Step 1: Crop prediction 
+# Step 1: Crop Prediction — PREDICTION ONLY, no DB write.
+# Nothing is logged yet because the cycle isn't complete until Step 2 runs.
+# This also means retrying/correcting inputs in Step 1 never leaves orphan
+# rows behind in recommendation_logs.
 @app.route("/predict/crop", methods=["POST"])
 def predict_crop():
-    """
-    Expects JSON: { N, P, K, temperature, humidity, ph, rainfall }
-    Returns:      { crop, confidence, top3: [{crop, confidence}, ...] }
-    """
     if crop_model is None or crop_le is None:
         return jsonify({"error": "Crop models failed to load on server boot."}), 500
-        
+
     data = request.get_json(force=True, silent=True) or {}
     try:
-        features = [[
-            float(data["N"]),
-            float(data["P"]),
-            float(data["K"]),
-            float(data["temperature"]),
-            float(data["humidity"]),
-            float(data["ph"]),
-            float(data["rainfall"]),
-        ]]
+        n = float(data["N"])
+        p = float(data["P"])
+        k = float(data["K"])
+        temp = float(data["temperature"])
+        hum = float(data["humidity"])
+        ph = float(data["ph"])
+        rainfall = float(data["rainfall"])
+        features = [[n, p, k, temp, hum, ph, rainfall]]
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"error": f"Invalid or missing input: {e}"}), 400
 
-    pred_enc   = crop_model.predict(features)[0]
-    proba      = crop_model.predict_proba(features)[0]
-    crop       = crop_le.inverse_transform([pred_enc])[0]
+    pred_enc = crop_model.predict(features)[0]
+    proba = crop_model.predict_proba(features)[0]
+    crop = crop_le.inverse_transform([pred_enc])[0]
     confidence = round(float(proba[pred_enc]) * 100, 2)
 
     top3_idx = np.argsort(proba)[::-1][:3]
@@ -187,34 +199,34 @@ def predict_crop():
         for i in top3_idx
     ]
 
-    return jsonify({"crop": crop, "confidence": confidence, "top3": top3})
+    return jsonify({
+        "crop": crop,
+        "confidence": confidence,
+        "top3": top3,
+    })
 
 
-#  Step 2: Fertilizer prediction
+# Step 2: Fertilizer Prediction — COMPLETES the row created in Step 1
 @app.route("/predict/fertilizer", methods=["POST"])
 def predict_fertilizer():
-    """
-    Expects JSON: { N, P, K, ph, temperature, humidity, rainfall,
-                    soil_type, crop_type [, moisture] }
-    """
     if fert_model is None or soil_le is None or crop_type_le is None:
         return jsonify({"error": "Fertilizer models failed to load on server boot."}), 500
-        
+
     data = request.get_json(force=True, silent=True) or {}
     try:
-        N           = float(data["N"])
-        P           = float(data["P"])
-        K           = float(data["K"])
-        ph          = float(data["ph"])
+        N = float(data["N"])
+        P = float(data["P"])
+        K = float(data["K"])
+        ph = float(data["ph"])
         temperature = float(data["temperature"])
-        humidity    = float(data["humidity"])
-        rainfall    = float(data["rainfall"])
-        soil_type   = str(data["soil_type"])
-        crop_type   = str(data["crop_type"])
+        humidity = float(data["humidity"])
+        rainfall = float(data["rainfall"])
+        soil_type = str(data["soil_type"])
+        crop_type = str(data["crop_type"])
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"error": f"Invalid or missing input: {e}"}), 400
 
-    # Resolve moisture 
+    # Resolve moisture
     if "moisture" in data:
         try:
             moisture = float(data["moisture"])
@@ -222,17 +234,12 @@ def predict_fertilizer():
         except (TypeError, ValueError):
             return jsonify({"error": "'moisture' must be a number (0–100)"}), 400
     elif SensorReading.query.order_by(SensorReading.id.desc()).first() is not None:
-        latest          = SensorReading.query.order_by(SensorReading.id.desc()).first()
-        moisture        = latest.soil_moisture
+        latest = SensorReading.query.order_by(SensorReading.id.desc()).first()
+        moisture = latest.soil_moisture
         moisture_source = "esp32_sensor"
-        print(f"[Fertilizer] Using ESP32 soil_moisture={moisture}% "
-              f"(reading id={latest.id} @ {latest.timestamp})")
     else:
         return jsonify({
-            "error": (
-                "No moisture value available. Either include 'moisture' in this "
-                "request body, or POST to /sensor_data from the ESP32 first."
-            )
+            "error": "No moisture value available. Either include 'moisture' or POST sensor data first."
         }), 400
 
     if soil_type not in SOIL_TYPES:
@@ -245,8 +252,8 @@ def predict_fertilizer():
 
     features = [[N, P, K, ph, moisture, temperature, humidity, rainfall, soil_enc, crop_enc]]
 
-    pred_enc   = fert_model.predict(features)[0]
-    proba      = fert_model.predict_proba(features)[0]
+    pred_enc = fert_model.predict(features)[0]
+    proba = fert_model.predict_proba(features)[0]
     fertilizer = fert_le.inverse_transform([pred_enc])[0]
     confidence = round(float(proba[pred_enc]) * 100, 2)
 
@@ -256,14 +263,42 @@ def predict_fertilizer():
         for i in all_idx
     ]
 
+    # This is the ONE and only INSERT for the whole cycle. It fires exactly
+    # once per completed Step-2 run, with every field filled in together —
+    # no matter how many times Step 1 was retried beforehand, since Step 1
+    # never touches the database.
+    log_entry = RecommendationLog(
+        nitrogen=N,
+        phosphorus=P,
+        potassium=K,
+        ph=ph,
+        rainfall=rainfall,
+        temperature=temperature,
+        humidity=humidity,
+        soil_moisture=moisture,
+        soil_type=soil_type,
+        predicted_crop=crop_type,
+        recommended_fertilizer=fertilizer
+    )
+    db.session.add(log_entry)
+    db.session.commit()
+    print(f"[Log Saved] Complete cycle logged as ID={log_entry.id} | Crop={crop_type} -> Fertilizer={fertilizer}")
+
     return jsonify({
-        "fertilizer":      fertilizer,
-        "confidence":      confidence,
-        "moisture_used":   moisture,
-        "moisture_source": moisture_source, 
+        "fertilizer": fertilizer,
+        "confidence": confidence,
+        "moisture_used": moisture,
+        "moisture_source": moisture_source,
         "all_fertilizers": all_fertilizers,
+        "log_id": log_entry.id
     })
 
-if __name__ == '__main__':
-   
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
+# ------------------------------------------------------------------------------
+# App Entry Point
+# ------------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()  # Automatically creates tables in MySQL if they don't exist
+    app.run(host="0.0.0.0", port=5000, debug=True)

@@ -1,5 +1,5 @@
-import streamlit as st
 import requests
+import streamlit as st
 
 # Page config
 st.set_page_config(
@@ -12,12 +12,11 @@ st.set_page_config(
 # Sidebar — Flask API + ESP32 controls
 with st.sidebar:
     st.markdown("### Flask API")
-    flask_api_url = st.text_input("Flask API URL", value="http://10.96.220.61:5000")
+    flask_api_url = st.text_input("Flask API URL", value="http://192.168.1.4:5000")
     flask_api_url = flask_api_url.rstrip("/")
 
     st.markdown("### ESP32 (WiFi)")
     st.caption("Enter the IP shown on the LCD after boot")
-    # UPDATED: Adjusted the placeholder subnet to match your hotspot
     esp32_ip = st.text_input("ESP32 IP Address", value="10.96.220.x",
                               placeholder="e.g. 10.96.220.45")
     esp32_url = f"http://{esp32_ip}" if esp32_ip and "x" not in esp32_ip else None
@@ -31,7 +30,7 @@ with st.sidebar:
                 st.success("ESP32 reachable!")
             else:
                 st.error(f"ESP32 replied with HTTP {r.status_code}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             st.error(f"Cannot reach ESP32: {e}")
 
 
@@ -102,15 +101,12 @@ def get_metadata(api_url):
 
 try:
     SOIL_TYPES, CROP_TYPES = get_metadata(flask_api_url)
-    
-   
-    # If app.py safely bypassed loading models due to version errors, these lists might be empty.
-    # This prevents the UI from crashing on the selectbox render.
+
     if not SOIL_TYPES:
         SOIL_TYPES = ["Sandy", "Loamy", "Clay", "Black", "Red"]
     if not CROP_TYPES:
         CROP_TYPES = ["Rice", "Wheat", "Maize", "Cotton"]
-        
+
 except requests.exceptions.RequestException as e:
     st.error(
         f"Cannot reach the Flask API at **{flask_api_url}**.\n\n"
@@ -120,11 +116,12 @@ except requests.exceptions.RequestException as e:
     st.stop()
 
 
-# Session state — all sensor/input defaults set to 0.0
+# Session state defaults
 for key, default in {
     "crop_result":     None,
     "crop_confidence": None,
     "crop_top3":       None,
+    "fert_log_id":     None,
     "chain":           None,
     "live_temp":       0.0,
     "live_humidity":   0.0,
@@ -194,6 +191,13 @@ html, body, [class*="css"] {
     padding: 2px 7px; margin-left: 6px;
     vertical-align: middle; letter-spacing: 0.4px;
 }
+.badge-db {
+    display: inline-block; background: #0F2D3A;
+    border: 1px solid #1E5066; border-radius: 5px;
+    font-size: 0.72rem; color: #38BDF8;
+    padding: 3px 8px; margin-top: 10px;
+    letter-spacing: 0.4px;
+}
 
 /* Locked display field */
 .locked-field {
@@ -255,12 +259,6 @@ html, body, [class*="css"] {
     font-family: 'DM Serif Display', serif;
     font-size: 2.5rem; color: #7FD18E; line-height: 1.1;
 }
-.conf-bar-bg {
-    background: #1E3322; border-radius: 999px;
-    height: 5px; margin: 1rem auto 0.35rem; max-width: 300px;
-}
-.conf-bar-fill { background: #7FD18E; border-radius: 999px; height: 5px; }
-.conf-text { font-size: 0.82rem; color: #8BA892; }
 
 .warn-box {
     background: #1A1500; border: 1px solid #3A3000;
@@ -280,7 +278,7 @@ header[data-testid="stHeader"] { background: transparent !important; }
 st.markdown("""
 <div class="hero">
     <h1>AgroSense</h1>
-    <p><h4>Crop Recommendation &rarr; Fertilizer Recommendation</h4></p>
+    <p>Crop Recommendation &rarr; Fertilizer Recommendation</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -396,6 +394,7 @@ if is_step_1:
                 "N": N, "P": P, "K": K,
                 "temperature": temperature, "humidity": humidity,
                 "ph": ph, "rainfall": rainfall,
+                "moisture": moisture_sensor,
             }, timeout=8)
             resp.raise_for_status()
             result = resp.json()
@@ -410,6 +409,8 @@ if is_step_1:
         st.session_state.crop_result     = crop
         st.session_state.crop_confidence = confidence
         st.session_state.crop_top3       = top3
+        # New crop run = new cycle, so any previous fertilizer log_id no longer applies
+        st.session_state.fert_log_id     = None
 
         st.session_state.chain = {
             "N": N, "P": P, "K": K, "rainfall": rainfall,
@@ -418,6 +419,7 @@ if is_step_1:
             "moisture": moisture_sensor,
         }
 
+        # Nothing is written to MySQL yet — only Step 2 logs the completed cycle.
         st.markdown(f"""
         <div class="result-box">
             <div class="result-label">Recommended Crop</div>
@@ -534,23 +536,25 @@ else:
             st.stop()
 
         fertilizer = result["fertilizer"]
+        log_id     = result.get("log_id")
+        st.session_state.fert_log_id = log_id
 
         if lcd_enabled and esp32_url:
             sent = update_lcd(esp32_url, f"Crop: {crop_title}", f"Fert: {fertilizer}")
             if sent:
                 st.toast("Sent to LCD.")
 
+        if log_id:
+            st.toast(f"Recommendation completed in MySQL (Record ID: {log_id})")
+
         st.markdown(f"""
         <div class="result-box">
             <div class="result-label">Recommended Fertilizer</div>
             <div class="result-value">{fertilizer}</div>
+            {f'<div class="badge-db">🗄️ Saved to MySQL Log ID #{log_id}</div>' if log_id else ''}
         </div>
         """, unsafe_allow_html=True)
 
 # Footer
 st.markdown("<br><hr>", unsafe_allow_html=True)
 st.markdown('<p style="text-align:center;color:#2A4230;font-size:0.76rem;padding-bottom:1rem;">AgroSense · Chain Inference Pipeline</p>', unsafe_allow_html=True)
-
-
-
-
