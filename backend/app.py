@@ -53,10 +53,8 @@ def nepal_now():
     return datetime.now(NEPAL_TZ).replace(tzinfo=None)
 
 
-# ------------------------------------------------------------------------------
-# Database Models
-# ------------------------------------------------------------------------------
 
+# Database Models
 # Table 1: Live ESP32 Sensor Readings
 class SensorReading(db.Model):
     __tablename__ = "sensor_readings"
@@ -89,9 +87,7 @@ class RecommendationLog(db.Model):
     timestamp = db.Column(db.DateTime, default=nepal_now)
 
 
-# ------------------------------------------------------------------------------
 # ML Model Loading
-# ------------------------------------------------------------------------------
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -122,9 +118,8 @@ SOIL_TYPES = list(soil_le.classes_) if soil_le else []
 CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
 
 
-# ------------------------------------------------------------------------------
+
 # Routes
-# ------------------------------------------------------------------------------
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -237,7 +232,7 @@ def predict_fertilizer():
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"error": f"Invalid or missing input: {e}"}), 400
 
-    # Resolve moisture
+    #  moisture
     if "moisture" in data:
         try:
             moisture = float(data["moisture"])
@@ -305,9 +300,9 @@ def predict_fertilizer():
     })
 
 
-# ------------------------------------------------------------------------------
+
 # App Entry Point
-# ------------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     with app.app_context():

@@ -12,7 +12,7 @@ st.set_page_config(
 # Sidebar — Flask API + ESP32 controls
 with st.sidebar:
     st.markdown("### Flask API")
-    flask_api_url = st.text_input("Flask API URL", value="http://192.168.1.4:5000")
+    flask_api_url = st.text_input("Flask API URL", value="http://127.0.0.1:5000")
     flask_api_url = flask_api_url.rstrip("/")
 
     st.markdown("### ESP32 (WiFi)")
@@ -70,24 +70,38 @@ def fetch_sensor_data_from_flask(api_url):
 POKHARA_LAT = 28.2096
 POKHARA_LON = 83.9856
 
-def fetch_live_rainfall():
-    """Fetches current real-time precipitation (mm) for Pokhara via Open-Meteo."""
+def fetch_recent_rainfall(days=30):
+    """
+    Fetches CUMULATIVE rainfall (mm) over the past `days` days for Pokhara.
+
+    Open-Meteo's `current: precipitation` only reports rain falling in the
+    exact current hour, so it reads ~0.0 almost all the time — rain is
+    intermittent, not constant, so an instantaneous snapshot is nearly
+    useless. Crop-recommendation models are trained on a SEASONAL/MONTHLY
+    rainfall total instead, so a rolling cumulative sum (default: past 30
+    days) is the closer match and won't be a flat 0.0 whenever it happens
+    to not be raining at the exact moment you click the button.
+    """
     try:
         resp = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
                 "latitude": POKHARA_LAT,
                 "longitude": POKHARA_LON,
-                "current": "precipitation",
+                "daily": "precipitation_sum",
+                "past_days": days,
+                "forecast_days": 1,
                 "timezone": "Asia/Kathmandu",
             },
             timeout=8,
         )
         resp.raise_for_status()
         data = resp.json()
-        return float(data["current"]["precipitation"])
+        daily_values = data["daily"]["precipitation_sum"]
+        total = sum(v for v in daily_values if v is not None)
+        return round(float(total), 2)
     except Exception as e:
-        st.error(f"Could not fetch live rainfall: {e}")
+        st.error(f"Could not fetch rainfall data: {e}")
         return None
 
 
@@ -288,9 +302,9 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 is_step_1 = (mode == tab_options[0])
 
-# ─────────────────────────────────────────────────────────────
+
 # STEP 1 — CROP RECOMMENDATION
-# ─────────────────────────────────────────────────────────────
+
 
 if is_step_1:
     st.markdown('<div class="sec-label">Soil Nutrients <span class="badge">Manual entry</span></div>', unsafe_allow_html=True)
@@ -302,21 +316,21 @@ if is_step_1:
     with c3:
         K = st.number_input("Potassium (K) kg/ha", 0.0, 300.0, 0.0, 1.0, key="K")
 
-    st.markdown('<div class="sec-label">Rainfall <span class="badge">Manual / Open-Meteo · Pokhara</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-label">Rainfall <span class="badge">Manual / Open-Meteo · Pokhara · 30-day total</span></div>', unsafe_allow_html=True)
 
     rf1, rf2 = st.columns([1, 3])
     with rf1:
         st.markdown("<div style='margin-top: 1.8rem;'></div>", unsafe_allow_html=True)
-        if st.button("Fetch Live Rainfall", use_container_width=True):
-            with st.spinner("Fetching current precipitation for Pokhara..."):
-                value = fetch_live_rainfall()
+        if st.button("Fetch 30-Day Rainfall", use_container_width=True):
+            with st.spinner("Fetching 30-day rainfall total for Pokhara..."):
+                value = fetch_recent_rainfall(days=30)
                 if value is not None:
                     st.session_state.live_rainfall = value
                     st.toast("Rainfall synchronized.")
                     st.rerun()
     with rf2:
         st.session_state.live_rainfall = st.number_input(
-            "Current precipitation (mm)",
+            "Rainfall — past 30 days total (mm)",
             min_value=0.0,
             max_value=1000.0,
             value=float(st.session_state.live_rainfall),
@@ -437,9 +451,9 @@ if is_step_1:
         """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────────────────────
+
 # STEP 2 — FERTILIZER RECOMMENDATION
-# ─────────────────────────────────────────────────────────────
+
 
 else:
     ch = st.session_state.chain
@@ -551,7 +565,7 @@ else:
         <div class="result-box">
             <div class="result-label">Recommended Fertilizer</div>
             <div class="result-value">{fertilizer}</div>
-            
+            {f'<div class="badge-db">🗄️ Saved to MySQL Log ID #{log_id}</div>' if log_id else ''}
         </div>
         """, unsafe_allow_html=True)
 
