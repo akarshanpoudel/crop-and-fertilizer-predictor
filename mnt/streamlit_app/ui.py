@@ -105,6 +105,64 @@ def fetch_recent_rainfall(days=30):
         return None
 
 
+def fetch_annual_rainfall():
+    """
+    Fetches CUMULATIVE rainfall (mm) over the past 365 days for Pokhara.
+
+    The fertilizer model was trained on rainfall values in the ~200-3000mm
+    range (annual totals), which is roughly 15x larger than what the crop
+    model expects (~20-300mm, a growing-season figure). Reusing Step 1's
+    rainfall value here would feed the fertilizer model a number far outside
+    anything it saw during training, so this fetches an independent annual
+    total via Open-Meteo's historical archive instead of the 7-day figure
+    used in Step 1.
+
+    Uses archive-api.open-meteo.com — a DIFFERENT subdomain from the
+    api.open-meteo.com used by Step 1's fetch. If Step 1's fetch works but
+    this one consistently fails, that points to this specific subdomain
+    being blocked on your network rather than a general connectivity issue.
+    """
+    from datetime import date, timedelta
+    end = date.today() - timedelta(days=7)    # archive data has a lag; 7-day buffer is safer than 5
+    start = end - timedelta(days=365)
+    try:
+        resp = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": POKHARA_LAT,
+                "longitude": POKHARA_LON,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "daily": "precipitation_sum",
+                "timezone": "Asia/Kathmandu",
+            },
+            timeout=20,
+        )
+    except requests.exceptions.Timeout:
+        st.error("Annual rainfall fetch timed out after 20s. Try again, or enter the value manually.")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        st.error(
+            f"Could not reach archive-api.open-meteo.com (different subdomain "
+            f"from the Step 1 fetch — may be blocked on this network): {e}"
+        )
+        return None
+
+    if resp.status_code != 200:
+        st.error(f"Open-Meteo archive API returned HTTP {resp.status_code}: {resp.text[:300]}")
+        return None
+
+    try:
+        data = resp.json()
+        daily_values = data["daily"]["precipitation_sum"]
+    except (KeyError, ValueError) as e:
+        st.error(f"Unexpected response shape from archive API ({e}). Raw response: {resp.text[:300]}")
+        return None
+
+    total = sum(v for v in daily_values if v is not None)
+    return round(float(total), 2)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_metadata(api_url):
     resp = requests.get(f"{api_url}/health", timeout=5)
@@ -141,6 +199,7 @@ for key, default in {
     "live_humidity":   0.0,
     "live_moisture":   0.0,
     "live_rainfall":   0.0,
+    "live_annual_rainfall": 0.0,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -302,9 +361,9 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 is_step_1 = (mode == tab_options[0])
 
-
+# ─────────────────────────────────────────────────────────────
 # STEP 1 — CROP RECOMMENDATION
-
+# ─────────────────────────────────────────────────────────────
 
 if is_step_1:
     st.markdown('<div class="sec-label">Soil Nutrients <span class="badge">Manual entry</span></div>', unsafe_allow_html=True)
@@ -316,21 +375,21 @@ if is_step_1:
     with c3:
         K = st.number_input("Potassium (K) kg/ha", 0.0, 300.0, 0.0, 1.0, key="K")
 
-    st.markdown('<div class="sec-label">Rainfall <span class="badge">Manual / Open-Meteo · Pokhara · 30-day total</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-label">Rainfall <span class="badge">Manual / Open-Meteo · Pokhara · 7-day total</span></div>', unsafe_allow_html=True)
 
     rf1, rf2 = st.columns([1, 3])
     with rf1:
         st.markdown("<div style='margin-top: 1.8rem;'></div>", unsafe_allow_html=True)
-        if st.button("Fetch 30-Day Rainfall", use_container_width=True):
-            with st.spinner("Fetching 30-day rainfall total for Pokhara..."):
-                value = fetch_recent_rainfall(days=30)
+        if st.button("Fetch 7-Day Rainfall", use_container_width=True):
+            with st.spinner("Fetching 7-day rainfall total for Pokhara..."):
+                value = fetch_recent_rainfall(days=7)
                 if value is not None:
                     st.session_state.live_rainfall = value
                     st.toast("Rainfall synchronized.")
                     st.rerun()
     with rf2:
         st.session_state.live_rainfall = st.number_input(
-            "Rainfall — past 30 days total (mm)",
+            "Rainfall — past 7 days total (mm)",
             min_value=0.0,
             max_value=1000.0,
             value=float(st.session_state.live_rainfall),
@@ -338,6 +397,17 @@ if is_step_1:
             help="Enter manually or use the Fetch button",
         )
         rainfall = st.session_state.live_rainfall
+
+        # The crop model was trained on a 20-299mm range. Pokhara's real
+        # monsoon rainfall regularly exceeds this, so warn rather than
+        # silently feed the model an out-of-distribution value.
+        if rainfall > 299:
+            st.warning(
+                f"⚠️ {rainfall}mm exceeds the crop model's trained range "
+                f"(20–299mm). This is real Pokhara data, not an error — but "
+                f"the prediction may be unreliable this far outside training "
+                f"data. Consider entering a value manually instead."
+            )
 
     st.markdown(
         '<div class="sec-label">'
@@ -451,9 +521,9 @@ if is_step_1:
         """, unsafe_allow_html=True)
 
 
-
+# ─────────────────────────────────────────────────────────────
 # STEP 2 — FERTILIZER RECOMMENDATION
-
+# ─────────────────────────────────────────────────────────────
 
 else:
     ch = st.session_state.chain
@@ -480,8 +550,8 @@ else:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="sec-label">Soil Nutrients & Rainfall <span class="badge-lock">Locked</span></div>', unsafe_allow_html=True)
-    lc1, lc2, lc3, lc4 = st.columns(4)
+    st.markdown('<div class="sec-label">Soil Nutrients <span class="badge-lock">Locked</span></div>', unsafe_allow_html=True)
+    lc1, lc2, lc3 = st.columns(3)
 
     def locked(col, label, value, unit):
         with col:
@@ -493,10 +563,48 @@ else:
                 unsafe_allow_html=True,
             )
 
-    locked(lc1, "Nitrogen (N)",   ch["N"],        "kg/ha")
-    locked(lc2, "Phosphorus (P)", ch["P"],        "kg/ha")
-    locked(lc3, "Potassium (K)",  ch["K"],        "kg/ha")
-    locked(lc4, "Rainfall",       ch["rainfall"], "mm")
+    locked(lc1, "Nitrogen (N)",   ch["N"], "kg/ha")
+    locked(lc2, "Phosphorus (P)", ch["P"], "kg/ha")
+    locked(lc3, "Potassium (K)",  ch["K"], "kg/ha")
+
+    st.markdown(
+        '<div class="sec-label">'
+        'Annual Rainfall '
+        '<span class="badge">Manual / Open-Meteo · Pokhara · 365-day total</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "This model was trained on annual rainfall totals (~200–3000mm), "
+        "unlike Step 1's growing-season figure — so it's entered separately here."
+    )
+
+    ar1, ar2 = st.columns([1, 3])
+    with ar1:
+        st.markdown("<div style='margin-top: 1.8rem;'></div>", unsafe_allow_html=True)
+        if st.button("Fetch Annual Rainfall", use_container_width=True):
+            with st.spinner("Fetching 365-day rainfall total for Pokhara..."):
+                value = fetch_annual_rainfall()
+                if value is not None:
+                    st.session_state.live_annual_rainfall = value
+                    st.toast("Annual rainfall synchronized.")
+                    st.rerun()
+    with ar2:
+        st.session_state.live_annual_rainfall = st.number_input(
+            "Annual rainfall (mm)",
+            min_value=0.0,
+            max_value=5000.0,
+            value=float(st.session_state.live_annual_rainfall),
+            step=1.0,
+            help="Enter manually or use the Fetch button. Independent from Step 1's rainfall value.",
+        )
+        annual_rainfall = st.session_state.live_annual_rainfall
+
+        if annual_rainfall > 2999 or (0 < annual_rainfall < 202):
+            st.warning(
+                f"⚠️ {annual_rainfall}mm is outside the fertilizer model's "
+                f"trained range (~202–2999mm). Prediction may be less reliable."
+            )
 
     st.markdown(
         '<div class="sec-label">'
@@ -540,7 +648,7 @@ else:
                 "N": ch["N"], "P": ch["P"], "K": ch["K"],
                 "ph": ch["ph"], "moisture": final_moisture,
                 "temperature": ch["temperature"], "humidity": ch["humidity"],
-                "rainfall": ch["rainfall"],
+                "rainfall": annual_rainfall,
                 "soil_type": soil_type, "crop_type": matched_crop,
             }, timeout=8)
             resp.raise_for_status()
