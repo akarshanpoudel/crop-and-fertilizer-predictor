@@ -77,12 +77,14 @@ class RecommendationLog(db.Model):
     phosphorus = db.Column(db.Float, nullable=False)
     potassium = db.Column(db.Float, nullable=False)
     ph = db.Column(db.Float, nullable=False)
-    rainfall = db.Column(db.Float, nullable=False)
+    rainfall = db.Column(db.Float, nullable=False)  # annual (365-day) — feeds fert_model
+    rainfall_growing_season = db.Column(db.Float, nullable=True)  # 7-day — feeds crop_model, shown in Step 1 UI
     temperature = db.Column(db.Float, nullable=False)
     humidity = db.Column(db.Float, nullable=False)
     soil_moisture = db.Column(db.Float, nullable=False)
     soil_type = db.Column(db.String(50), nullable=True)
-    predicted_crop = db.Column(db.String(100), nullable=True)
+    predicted_crop = db.Column(db.String(100), nullable=True)  # Step 1's raw output (22-crop space)
+    fertilizer_crop_type = db.Column(db.String(50), nullable=True)  # crop type actually fed to fert_model (7-crop space)
     recommended_fertilizer = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=nepal_now)
 
@@ -116,6 +118,90 @@ print("Models loaded (or safely bypassed).")
 
 SOIL_TYPES = list(soil_le.classes_) if soil_le else []
 CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
+
+
+# Chain-inference crop mapping (Step 1 -> Step 2)
+# ─────────────────────────────────────────────────────────────
+# crop_model.predict() (Crop_recommendation.csv) can output any of 22 crops.
+# fert_model.predict() (fertilizer_recommendation.csv) only knows 7 crop
+# types: Cotton, Maize, Potato, Rice, Sugarcane, Tomato, Wheat. Only 3 of
+# the 22 overlap by name (rice, maize, cotton) — the other 19 need to be
+# mapped onto the closest of the 7 supported types.
+#
+# This mapping is curated by agronomic similarity (crop family, nutrient
+# demand, growth habit/climate), NOT a feature-space nearest-neighbor —
+# a nearest-centroid check against the fertilizer dataset showed its 7
+# Crop_Type groups are barely separable in N/P/K/temperature/humidity
+# (mean inter-centroid distance ~0.2 std devs, and even 'rice', 'maize',
+# 'cotton' didn't nearest-neighbor to their own group). A data-driven
+# distance metric isn't reliable here, so a human-auditable table is used
+# instead. Keys must be lowercase (crop_model's labels are lowercase);
+# values must exactly match a class in CROP_TYPES.
+#
+# Legumes/pulses -> Wheat: nitrogen-fixing, low fertilizer-N need,
+#   typically rotated with wheat in South Asian cropping systems.
+# Heavy tropical feeders -> Sugarcane: high biomass, heavy N/water demand.
+# High P&K fruiting crops -> Potato: potato is a classic high-K-demand
+#   crop; apple/grapes show unusually high P&K in the training data.
+# Cash/fiber crops -> Cotton: high-value non-food crops, substantial N
+#   demand, grouped with cotton rather than food grains.
+# Horticultural fruit/veg -> Tomato: tomato is the only horticultural/
+#   vegetable representative among the 7 supported types.
+CROP_TO_FERTILIZER_TYPE = {
+    # Exact matches
+    "rice": "Rice",
+    "maize": "Maize",
+    "cotton": "Cotton",
+    # Legumes / pulses -> Wheat
+    "blackgram": "Wheat",
+    "chickpea": "Wheat",
+    "kidneybeans": "Wheat",
+    "lentil": "Wheat",
+    "mothbeans": "Wheat",
+    "mungbean": "Wheat",
+    "pigeonpeas": "Wheat",
+    # Heavy tropical feeders -> Sugarcane
+    "banana": "Sugarcane",
+    "coconut": "Sugarcane",
+    "papaya": "Sugarcane",
+    # High P&K fruiting crops -> Potato
+    "apple": "Potato",
+    "grapes": "Potato",
+    # Cash / fiber crops -> Cotton
+    "coffee": "Cotton",
+    "jute": "Cotton",
+    # Horticultural fruit/vegetable -> Tomato
+    "mango": "Tomato",
+    "muskmelon": "Tomato",
+    "orange": "Tomato",
+    "pomegranate": "Tomato",
+    "watermelon": "Tomato",
+}
+
+
+def resolve_fertilizer_crop_type(predicted_crop):
+    """
+    Chain-inference step: maps Step 1's predicted crop (any of the 22
+    crop_model classes) onto one of the 7 crop types the fertilizer model
+    actually supports. Fully automatic — no manual override.
+
+    Returns (fertilizer_crop_type, was_mapped) or (None, None) if the
+    predicted crop isn't recognized at all (defensive — shouldn't happen
+    for any output of crop_model, but the model/CSV could change).
+    """
+    key = str(predicted_crop).strip().lower()
+
+    # Case-insensitive exact match against the fertilizer model's own
+    # classes first (covers rice/maize/cotton without relying on the
+    # static table staying in sync if CROP_TYPES ever changes).
+    for ct in CROP_TYPES:
+        if ct.lower() == key:
+            return ct, False
+
+    mapped = CROP_TO_FERTILIZER_TYPE.get(key)
+    if mapped is None:
+        return None, None
+    return mapped, True
 
 
 
@@ -228,9 +314,32 @@ def predict_fertilizer():
         humidity = float(data["humidity"])
         rainfall = float(data["rainfall"])
         soil_type = str(data["soil_type"])
-        crop_type = str(data["crop_type"])
+        predicted_crop = str(data["predicted_crop"])
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"error": f"Invalid or missing input: {e}"}), 400
+
+    # rainfall_growing_season is logging-only (not a model feature) — the
+    # 7-day figure Step 1 displayed and used for crop_model. Optional so
+    # older callers that don't send it still work.
+    rainfall_growing_season = None
+    if "rainfall_growing_season" in data:
+        try:
+            rainfall_growing_season = float(data["rainfall_growing_season"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "'rainfall_growing_season' must be a number"}), 400
+
+    # Chain inference: Step 1's predicted crop is the ONLY input here — no
+    # manual crop_type override. Automatically resolved to one of the 7
+    # fertilizer-model crop types via resolve_fertilizer_crop_type().
+    crop_type, crop_type_mapped = resolve_fertilizer_crop_type(predicted_crop)
+    if crop_type is None:
+        return jsonify({
+            "error": (
+                f"'{predicted_crop}' is not a crop this pipeline knows how to "
+                f"handle (not in crop_model's classes or the fertilizer "
+                f"crop-type mapping table)."
+            )
+        }), 400
 
     #  moisture
     if "moisture" in data:
@@ -250,8 +359,8 @@ def predict_fertilizer():
 
     if soil_type not in SOIL_TYPES:
         return jsonify({"error": f"soil_type must be one of {SOIL_TYPES}"}), 400
-    if crop_type not in CROP_TYPES:
-        return jsonify({"error": f"crop_type must be one of {CROP_TYPES}"}), 400
+    # crop_type is not user-supplied — it came from resolve_fertilizer_crop_type(),
+    # which only ever returns a value from CROP_TYPES or None (already handled above).
 
     soil_enc = int(soil_le.transform([soil_type])[0])
     crop_enc = int(crop_type_le.transform([crop_type])[0])
@@ -279,16 +388,22 @@ def predict_fertilizer():
         potassium=K,
         ph=ph,
         rainfall=rainfall,
+        rainfall_growing_season=rainfall_growing_season,
         temperature=temperature,
         humidity=humidity,
         soil_moisture=moisture,
         soil_type=soil_type,
-        predicted_crop=crop_type,
+        predicted_crop=predicted_crop,
+        fertilizer_crop_type=crop_type,
         recommended_fertilizer=fertilizer
     )
     db.session.add(log_entry)
     db.session.commit()
-    print(f"[Log Saved] Complete cycle logged as ID={log_entry.id} | Crop={crop_type} -> Fertilizer={fertilizer}")
+    print(
+        f"[Log Saved] Complete cycle logged as ID={log_entry.id} | "
+        f"Predicted={predicted_crop} -> FertCropType={crop_type} "
+        f"({'mapped' if crop_type_mapped else 'exact match'}) -> Fertilizer={fertilizer}"
+    )
 
     return jsonify({
         "fertilizer": fertilizer,
@@ -296,6 +411,9 @@ def predict_fertilizer():
         "moisture_used": moisture,
         "moisture_source": moisture_source,
         "all_fertilizers": all_fertilizers,
+        "predicted_crop": predicted_crop,
+        "fertilizer_crop_type": crop_type,
+        "crop_type_mapped": crop_type_mapped,
         "log_id": log_entry.id
     })
 

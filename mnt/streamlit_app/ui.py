@@ -538,9 +538,6 @@ else:
 
     crop_name  = st.session_state.crop_result
     crop_title = crop_name.title()
-    matched_crop = crop_title if crop_title in CROP_TYPES else (
-        next((ct for ct in CROP_TYPES if ct.lower() == crop_name.lower()), CROP_TYPES[0])
-    )
 
     st.markdown('<div class="sec-label">Predicted Crop <span class="badge-lock">Locked</span></div>', unsafe_allow_html=True)
     st.markdown(
@@ -548,6 +545,12 @@ else:
         f'<div><div class="lc-label">Crop</div><div class="lc-value">{crop_title}</div></div>'
         f'</div>',
         unsafe_allow_html=True,
+    )
+    st.caption(
+        "Chain inference: this crop feeds directly into the fertilizer model below. "
+        "The fertilizer model only supports 7 crop types — if the predicted crop isn't "
+        "one of them, it's automatically mapped to the closest supported type. "
+        "No manual selection needed; you'll see which type was used once you run Step 2."
     )
 
     st.markdown('<div class="sec-label">Soil Nutrients <span class="badge-lock">Locked</span></div>', unsafe_allow_html=True)
@@ -649,7 +652,13 @@ else:
                 "ph": ch["ph"], "moisture": final_moisture,
                 "temperature": ch["temperature"], "humidity": ch["humidity"],
                 "rainfall": annual_rainfall,
-                "soil_type": soil_type, "crop_type": matched_crop,
+                # 7-day figure Step 1 displayed — logged for the record only,
+                # not used as a fertilizer-model feature.
+                "rainfall_growing_season": ch["rainfall"],
+                "soil_type": soil_type,
+                # Chain inference: raw Step 1 output. The backend resolves
+                # this to one of its 7 supported crop types automatically.
+                "predicted_crop": crop_name,
             }, timeout=8)
             resp.raise_for_status()
             result = resp.json()
@@ -657,8 +666,10 @@ else:
             st.error(f"Could not reach Flask API: {e}")
             st.stop()
 
-        fertilizer = result["fertilizer"]
-        log_id     = result.get("log_id")
+        fertilizer          = result["fertilizer"]
+        fert_crop_type      = result.get("fertilizer_crop_type")
+        crop_type_mapped    = result.get("crop_type_mapped", False)
+        log_id              = result.get("log_id")
         st.session_state.fert_log_id = log_id
 
         if lcd_enabled and esp32_url:
@@ -669,10 +680,17 @@ else:
         if log_id:
             st.toast(f"Recommendation completed in MySQL (Record ID: {log_id})")
 
+        mapping_note = (
+            f'<div class="badge-lock">Fertilizer model crop type: {fert_crop_type} '
+            f'{"(auto-mapped from " + crop_title + ")" if crop_type_mapped else "(exact match)"}</div>'
+            if fert_crop_type else ""
+        )
+
         st.markdown(f"""
         <div class="result-box">
             <div class="result-label">Recommended Fertilizer</div>
             <div class="result-value">{fertilizer}</div>
+            {mapping_note}
             {f'<div class="badge-db">🗄️ Saved to MySQL Log ID #{log_id}</div>' if log_id else ''}
         </div>
         """, unsafe_allow_html=True)
