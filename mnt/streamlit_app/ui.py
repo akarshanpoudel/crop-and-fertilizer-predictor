@@ -361,9 +361,7 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 is_step_1 = (mode == tab_options[0])
 
-# ─────────────────────────────────────────────────────────────
 # STEP 1 — CROP RECOMMENDATION
-# ─────────────────────────────────────────────────────────────
 
 if is_step_1:
     st.markdown('<div class="sec-label">Soil Nutrients <span class="badge">Manual entry</span></div>', unsafe_allow_html=True)
@@ -398,9 +396,6 @@ if is_step_1:
         )
         rainfall = st.session_state.live_rainfall
 
-        # The crop model was trained on a 20-299mm range. Pokhara's real
-        # monsoon rainfall regularly exceeds this, so warn rather than
-        # silently feed the model an out-of-distribution value.
         if rainfall > 299:
             st.warning(
                 f"⚠️ {rainfall}mm exceeds the crop model's trained range "
@@ -493,7 +488,6 @@ if is_step_1:
         st.session_state.crop_result     = crop
         st.session_state.crop_confidence = confidence
         st.session_state.crop_top3       = top3
-        # New crop run = new cycle, so any previous fertilizer log_id no longer applies
         st.session_state.fert_log_id     = None
 
         st.session_state.chain = {
@@ -503,7 +497,7 @@ if is_step_1:
             "moisture": moisture_sensor,
         }
 
-        # Nothing is written to MySQL yet — only Step 2 logs the completed cycle.
+        
         st.markdown(f"""
         <div class="result-box">
             <div class="result-label">Recommended Crop</div>
@@ -521,9 +515,8 @@ if is_step_1:
         """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────────────────────
+
 # STEP 2 — FERTILIZER RECOMMENDATION
-# ─────────────────────────────────────────────────────────────
 
 else:
     ch = st.session_state.chain
@@ -546,13 +539,7 @@ else:
         f'</div>',
         unsafe_allow_html=True,
     )
-    st.caption(
-        "Chain inference: this crop feeds directly into the fertilizer model below. "
-        "The fertilizer model only supports 7 crop types — if the predicted crop isn't "
-        "one of them, it's automatically mapped to the closest supported type. "
-        "No manual selection needed; you'll see which type was used once you run Step 2."
-    )
-
+ 
     st.markdown('<div class="sec-label">Soil Nutrients <span class="badge-lock">Locked</span></div>', unsafe_allow_html=True)
     lc1, lc2, lc3 = st.columns(3)
 
@@ -577,11 +564,7 @@ else:
         '</div>',
         unsafe_allow_html=True,
     )
-    st.caption(
-        "This model was trained on annual rainfall totals (~200–3000mm), "
-        "unlike Step 1's growing-season figure — so it's entered separately here."
-    )
-
+  
     ar1, ar2 = st.columns([1, 3])
     with ar1:
         st.markdown("<div style='margin-top: 1.8rem;'></div>", unsafe_allow_html=True)
@@ -652,12 +635,8 @@ else:
                 "ph": ch["ph"], "moisture": final_moisture,
                 "temperature": ch["temperature"], "humidity": ch["humidity"],
                 "rainfall": annual_rainfall,
-                # 7-day figure Step 1 displayed — logged for the record only,
-                # not used as a fertilizer-model feature.
                 "rainfall_growing_season": ch["rainfall"],
                 "soil_type": soil_type,
-                # Chain inference: raw Step 1 output. The backend resolves
-                # this to one of its 7 supported crop types automatically.
                 "predicted_crop": crop_name,
             }, timeout=8)
             resp.raise_for_status()
@@ -690,8 +669,6 @@ else:
         <div class="result-box">
             <div class="result-label">Recommended Fertilizer</div>
             <div class="result-value">{fertilizer}</div>
-            {mapping_note}
-            {f'<div class="badge-db">🗄️ Saved to MySQL Log ID #{log_id}</div>' if log_id else ''}
         </div>
         """, unsafe_allow_html=True)
 
