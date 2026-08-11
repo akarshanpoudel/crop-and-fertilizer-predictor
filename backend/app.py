@@ -3,9 +3,9 @@ AgroSense Flask API v2 — Soil Moisture & Recommendation Logging Integration
 ───────────────────────────────────────────────────────────────────────────
 Endpoints:
     GET  /health            → status check + valid soil/crop type lists
-    POST /sensor_data        → ESP32 pushes temperature, humidity, soil_moisture
-    GET  /sensor_data        → Streamlit fetches latest sensor readings
-    POST /predict/crop       → predicts crop & creates ONE recommendation_logs row
+    POST /sensor_data       → ESP32 pushes temperature, humidity, soil_moisture
+    GET  /sensor_data       → Streamlit fetches latest sensor readings
+    POST /predict/crop      → predicts crop & creates ONE recommendation_logs row
     POST /predict/fertilizer → predicts fertilizer & COMPLETES that same row
                                 — one INSERT per completed cycle, nothing written on Step 1
 
@@ -53,7 +53,6 @@ def nepal_now():
     return datetime.now(NEPAL_TZ).replace(tzinfo=None)
 
 
-
 # Database Models
 # Table 1: Live ESP32 Sensor Readings
 class SensorReading(db.Model):
@@ -84,7 +83,9 @@ class RecommendationLog(db.Model):
     soil_moisture = db.Column(db.Float, nullable=False)
     soil_type = db.Column(db.String(50), nullable=True)
     predicted_crop = db.Column(db.String(100), nullable=True)  # Step 1's raw output (22-crop space)
-    fertilizer_crop_type = db.Column(db.String(50), nullable=True)  # crop type actually fed to fert_model (7-crop space)
+    
+    # fertilizer_crop_type removed from database model here
+    
     recommended_fertilizer = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=nepal_now)
 
@@ -202,7 +203,6 @@ def resolve_fertilizer_crop_type(predicted_crop):
     if mapped is None:
         return None, None
     return mapped, True
-
 
 
 # Routes
@@ -359,10 +359,10 @@ def predict_fertilizer():
 
     if soil_type not in SOIL_TYPES:
         return jsonify({"error": f"soil_type must be one of {SOIL_TYPES}"}), 400
-    # crop_type is not user-supplied — it came from resolve_fertilizer_crop_type(),
-    # which only ever returns a value from CROP_TYPES or None (already handled above).
 
     soil_enc = int(soil_le.transform([soil_type])[0])
+    
+    # Internal processing remains entirely unchanged.
     crop_enc = int(crop_type_le.transform([crop_type])[0])
 
     features = [[N, P, K, ph, moisture, temperature, humidity, rainfall, soil_enc, crop_enc]]
@@ -378,10 +378,7 @@ def predict_fertilizer():
         for i in all_idx
     ]
 
-    # This is the ONE and only INSERT for the whole cycle. It fires exactly
-    # once per completed Step-2 run, with every field filled in together —
-    # no matter how many times Step 1 was retried beforehand, since Step 1
-    # never touches the database.
+    # This is the ONE and only INSERT for the whole cycle.
     log_entry = RecommendationLog(
         nitrogen=N,
         phosphorus=P,
@@ -394,11 +391,12 @@ def predict_fertilizer():
         soil_moisture=moisture,
         soil_type=soil_type,
         predicted_crop=predicted_crop,
-        fertilizer_crop_type=crop_type,
+        # fertilizer_crop_type has been removed from this insert
         recommended_fertilizer=fertilizer
     )
     db.session.add(log_entry)
     db.session.commit()
+    
     print(
         f"[Log Saved] Complete cycle logged as ID={log_entry.id} | "
         f"Predicted={predicted_crop} -> FertCropType={crop_type} "
@@ -412,15 +410,13 @@ def predict_fertilizer():
         "moisture_source": moisture_source,
         "all_fertilizers": all_fertilizers,
         "predicted_crop": predicted_crop,
-        "fertilizer_crop_type": crop_type,
+        "fertilizer_crop_type": crop_type, # Safe to leave in JSON payload for UI debugging
         "crop_type_mapped": crop_type_mapped,
         "log_id": log_entry.id
     })
 
 
-
 # App Entry Point
-
 
 if __name__ == "__main__":
     with app.app_context():

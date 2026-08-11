@@ -1,13 +1,14 @@
 """
-One-off migration: adds `rainfall_growing_season` and `fertilizer_crop_type`
-to the existing `recommendation_logs` table.
+One-off migration: 
+1. Ensures `rainfall_growing_season` EXISTS.
+2. Ensures `fertilizer_crop_type` is DROPPED.
 
 Reuses the SAME .env variables as app.py (MYSQLUSER, MYSQLPASSWORD,
 MYSQLHOST, MYSQLPORT, MYSQLDATABASE) — run this from the same folder as
-your .env file, or set MIGRATE_ENV_PATH below.
+your .env file.
 
 Safe to run more than once: it checks information_schema first and only
-adds a column if it isn't already there.
+adds/drops a column if necessary.
 
 Usage:
     pip install mysql-connector-python python-dotenv --break-system-packages
@@ -32,12 +33,14 @@ DB_CONFIG = {
 
 MIGRATIONS = [
     {
+        "action": "add",
         "column": "rainfall_growing_season",
         "ddl": "ALTER TABLE recommendation_logs ADD COLUMN rainfall_growing_season FLOAT NULL AFTER rainfall",
     },
     {
+        "action": "drop",
         "column": "fertilizer_crop_type",
-        "ddl": "ALTER TABLE recommendation_logs ADD COLUMN fertilizer_crop_type VARCHAR(50) NULL AFTER predicted_crop",
+        "ddl": "ALTER TABLE recommendation_logs DROP COLUMN fertilizer_crop_type",
     },
 ]
 
@@ -49,8 +52,13 @@ def main():
         sys.exit(1)
 
     print(f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']} ...")
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
+    
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+    except Exception as e:
+        print(f"[Error] Failed to connect to database: {e}")
+        sys.exit(1)
 
     for m in MIGRATIONS:
         cursor.execute(
@@ -62,18 +70,27 @@ def main():
         )
         exists = cursor.fetchone()[0] > 0
 
-        if exists:
-            print(f"[Skip] '{m['column']}' already exists.")
-            continue
-
-        print(f"[Adding] {m['column']} ...")
-        cursor.execute(m["ddl"])
-        conn.commit()
-        print(f"[Done] {m['column']} added.")
+        if m["action"] == "add":
+            if exists:
+                print(f"[Skip] '{m['column']}' already exists.")
+            else:
+                print(f"[Adding] {m['column']} ...")
+                cursor.execute(m["ddl"])
+                conn.commit()
+                print(f"[Done] '{m['column']}' added.")
+                
+        elif m["action"] == "drop":
+            if not exists:
+                print(f"[Skip] '{m['column']}' is already dropped (does not exist).")
+            else:
+                print(f"[Dropping] {m['column']} ...")
+                cursor.execute(m["ddl"])
+                conn.commit()
+                print(f"[Done] '{m['column']}' dropped.")
 
     cursor.close()
     conn.close()
-    print("Migration complete.")
+    print("Migration complete. The database schema is now up to date.")
 
 
 if __name__ == "__main__":
