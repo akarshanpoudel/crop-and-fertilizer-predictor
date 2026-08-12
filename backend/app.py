@@ -42,14 +42,12 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# Nepal Standard Time (UTC+5:45) — used for all recommendation_logs /
-# sensor_readings timestamps instead of UTC, so DB times match local time.
+# Nepal Standard Time (UTC+5:45)
 NEPAL_TZ = ZoneInfo("Asia/Kathmandu")
 
 
 def nepal_now():
-    # naive datetime (tzinfo stripped) so it stores cleanly in a MySQL
-    # DATETIME column without timezone-aware/naive comparison issues
+   
     return datetime.now(NEPAL_TZ).replace(tzinfo=None)
 
 
@@ -66,8 +64,7 @@ class SensorReading(db.Model):
 
 
 # Table 2: Complete Pipeline Recommendation History
-# One row == one complete prediction cycle. Written once, by /predict/fertilizer,
-# only after both crop and fertilizer predictions are known.
+# One row == one complete prediction cycle.
 class RecommendationLog(db.Model):
     __tablename__ = "recommendation_logs"
 
@@ -76,16 +73,13 @@ class RecommendationLog(db.Model):
     phosphorus = db.Column(db.Float, nullable=False)
     potassium = db.Column(db.Float, nullable=False)
     ph = db.Column(db.Float, nullable=False)
-    rainfall = db.Column(db.Float, nullable=False)  # annual (365-day) — feeds fert_model
-    rainfall_growing_season = db.Column(db.Float, nullable=True)  # 7-day — feeds crop_model, shown in Step 1 UI
+    rainfall = db.Column(db.Float, nullable=False)  
+    rainfall_growing_season = db.Column(db.Float, nullable=True)  
     temperature = db.Column(db.Float, nullable=False)
     humidity = db.Column(db.Float, nullable=False)
     soil_moisture = db.Column(db.Float, nullable=False)
     soil_type = db.Column(db.String(50), nullable=True)
-    predicted_crop = db.Column(db.String(100), nullable=True)  # Step 1's raw output (22-crop space)
-    
-    # fertilizer_crop_type removed from database model here
-    
+    predicted_crop = db.Column(db.String(100), nullable=True)     
     recommended_fertilizer = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=nepal_now)
 
@@ -122,38 +116,13 @@ CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
 
 
 # Chain-inference crop mapping (Step 1 -> Step 2)
-# ─────────────────────────────────────────────────────────────
-# crop_model.predict() (Crop_recommendation.csv) can output any of 22 crops.
-# fert_model.predict() (fertilizer_recommendation.csv) only knows 7 crop
-# types: Cotton, Maize, Potato, Rice, Sugarcane, Tomato, Wheat. Only 3 of
-# the 22 overlap by name (rice, maize, cotton) — the other 19 need to be
-# mapped onto the closest of the 7 supported types.
-#
-# This mapping is curated by agronomic similarity (crop family, nutrient
-# demand, growth habit/climate), NOT a feature-space nearest-neighbor —
-# a nearest-centroid check against the fertilizer dataset showed its 7
-# Crop_Type groups are barely separable in N/P/K/temperature/humidity
-# (mean inter-centroid distance ~0.2 std devs, and even 'rice', 'maize',
-# 'cotton' didn't nearest-neighbor to their own group). A data-driven
-# distance metric isn't reliable here, so a human-auditable table is used
-# instead. Keys must be lowercase (crop_model's labels are lowercase);
-# values must exactly match a class in CROP_TYPES.
-#
-# Legumes/pulses -> Wheat: nitrogen-fixing, low fertilizer-N need,
-#   typically rotated with wheat in South Asian cropping systems.
-# Heavy tropical feeders -> Sugarcane: high biomass, heavy N/water demand.
-# High P&K fruiting crops -> Potato: potato is a classic high-K-demand
-#   crop; apple/grapes show unusually high P&K in the training data.
-# Cash/fiber crops -> Cotton: high-value non-food crops, substantial N
-#   demand, grouped with cotton rather than food grains.
-# Horticultural fruit/veg -> Tomato: tomato is the only horticultural/
-#   vegetable representative among the 7 supported types.
+
 CROP_TO_FERTILIZER_TYPE = {
-    # Exact matches
+   
     "rice": "Rice",
     "maize": "Maize",
     "cotton": "Cotton",
-    # Legumes / pulses -> Wheat
+   
     "blackgram": "Wheat",
     "chickpea": "Wheat",
     "kidneybeans": "Wheat",
@@ -161,17 +130,17 @@ CROP_TO_FERTILIZER_TYPE = {
     "mothbeans": "Wheat",
     "mungbean": "Wheat",
     "pigeonpeas": "Wheat",
-    # Heavy tropical feeders -> Sugarcane
+   
     "banana": "Sugarcane",
     "coconut": "Sugarcane",
     "papaya": "Sugarcane",
-    # High P&K fruiting crops -> Potato
+    
     "apple": "Potato",
     "grapes": "Potato",
-    # Cash / fiber crops -> Cotton
+   
     "coffee": "Cotton",
     "jute": "Cotton",
-    # Horticultural fruit/vegetable -> Tomato
+   
     "mango": "Tomato",
     "muskmelon": "Tomato",
     "orange": "Tomato",
@@ -192,9 +161,6 @@ def resolve_fertilizer_crop_type(predicted_crop):
     """
     key = str(predicted_crop).strip().lower()
 
-    # Case-insensitive exact match against the fertilizer model's own
-    # classes first (covers rice/maize/cotton without relying on the
-    # static table staying in sync if CROP_TYPES ever changes).
     for ct in CROP_TYPES:
         if ct.lower() == key:
             return ct, False
@@ -258,10 +224,7 @@ def get_sensor_data():
     })
 
 
-# Step 1: Crop Prediction — PREDICTION ONLY, no DB write.
-# Nothing is logged yet because the cycle isn't complete until Step 2 runs.
-# This also means retrying/correcting inputs in Step 1 never leaves orphan
-# rows behind in recommendation_logs.
+# Step 1: Crop Prediction — PREDICTION ONLY
 @app.route("/predict/crop", methods=["POST"])
 def predict_crop():
     if crop_model is None or crop_le is None:
@@ -318,9 +281,6 @@ def predict_fertilizer():
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"error": f"Invalid or missing input: {e}"}), 400
 
-    # rainfall_growing_season is logging-only (not a model feature) — the
-    # 7-day figure Step 1 displayed and used for crop_model. Optional so
-    # older callers that don't send it still work.
     rainfall_growing_season = None
     if "rainfall_growing_season" in data:
         try:
@@ -328,9 +288,7 @@ def predict_fertilizer():
         except (TypeError, ValueError):
             return jsonify({"error": "'rainfall_growing_season' must be a number"}), 400
 
-    # Chain inference: Step 1's predicted crop is the ONLY input here — no
-    # manual crop_type override. Automatically resolved to one of the 7
-    # fertilizer-model crop types via resolve_fertilizer_crop_type().
+    # Chain inference: Step 1's predicted crop is the ONLY input here
     crop_type, crop_type_mapped = resolve_fertilizer_crop_type(predicted_crop)
     if crop_type is None:
         return jsonify({
@@ -362,7 +320,6 @@ def predict_fertilizer():
 
     soil_enc = int(soil_le.transform([soil_type])[0])
     
-    # Internal processing remains entirely unchanged.
     crop_enc = int(crop_type_le.transform([crop_type])[0])
 
     features = [[N, P, K, ph, moisture, temperature, humidity, rainfall, soil_enc, crop_enc]]
@@ -391,7 +348,6 @@ def predict_fertilizer():
         soil_moisture=moisture,
         soil_type=soil_type,
         predicted_crop=predicted_crop,
-        # fertilizer_crop_type has been removed from this insert
         recommended_fertilizer=fertilizer
     )
     db.session.add(log_entry)
@@ -410,7 +366,7 @@ def predict_fertilizer():
         "moisture_source": moisture_source,
         "all_fertilizers": all_fertilizers,
         "predicted_crop": predicted_crop,
-        "fertilizer_crop_type": crop_type, # Safe to leave in JSON payload for UI debugging
+        "fertilizer_crop_type": crop_type, 
         "crop_type_mapped": crop_type_mapped,
         "log_id": log_entry.id
     })
