@@ -16,3 +16,5 @@ ENV/
 # Ignore local system files
 .DS_Store
 Thumbs.db
+
+migrate_recommendation_logs.py
