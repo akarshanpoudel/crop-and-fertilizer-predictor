@@ -106,24 +106,9 @@ def fetch_recent_rainfall(days=30):
 
 
 def fetch_annual_rainfall():
-    """
-    Fetches CUMULATIVE rainfall (mm) over the past 365 days for Pokhara.
-
-    The fertilizer model was trained on rainfall values in the ~200-3000mm
-    range (annual totals), which is roughly 15x larger than what the crop
-    model expects (~20-300mm, a growing-season figure). Reusing Step 1's
-    rainfall value here would feed the fertilizer model a number far outside
-    anything it saw during training, so this fetches an independent annual
-    total via Open-Meteo's historical archive instead of the 7-day figure
-    used in Step 1.
-
-    Uses archive-api.open-meteo.com — a DIFFERENT subdomain from the
-    api.open-meteo.com used by Step 1's fetch. If Step 1's fetch works but
-    this one consistently fails, that points to this specific subdomain
-    being blocked on your network rather than a general connectivity issue.
-    """
+   
     from datetime import date, timedelta
-    end = date.today() - timedelta(days=7)    # archive data has a lag; 7-day buffer is safer than 5
+    end = date.today() - timedelta(days=7)    
     start = end - timedelta(days=365)
     try:
         resp = requests.get(
@@ -521,7 +506,7 @@ if is_step_1:
 else:
     ch = st.session_state.chain
 
-    # Guard: Step 1 must be completed first
+   
     if ch is None:
         st.markdown(
             '<div class="warn-box">⚠️ Complete Step 1 first — run a Crop Recommendation before proceeding.</div>',
