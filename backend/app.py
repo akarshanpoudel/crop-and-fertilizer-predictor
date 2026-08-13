@@ -47,7 +47,7 @@ NEPAL_TZ = ZoneInfo("Asia/Kathmandu")
 
 
 def nepal_now():
-   
+
     return datetime.now(NEPAL_TZ).replace(tzinfo=None)
 
 
@@ -73,13 +73,13 @@ class RecommendationLog(db.Model):
     phosphorus = db.Column(db.Float, nullable=False)
     potassium = db.Column(db.Float, nullable=False)
     ph = db.Column(db.Float, nullable=False)
-    rainfall = db.Column(db.Float, nullable=False)  
-    rainfall_growing_season = db.Column(db.Float, nullable=True)  
+    rainfall = db.Column(db.Float, nullable=False)
+    rainfall_growing_season = db.Column(db.Float, nullable=True)
     temperature = db.Column(db.Float, nullable=False)
     humidity = db.Column(db.Float, nullable=False)
     soil_moisture = db.Column(db.Float, nullable=False)
     soil_type = db.Column(db.String(50), nullable=True)
-    predicted_crop = db.Column(db.String(100), nullable=True)     
+    predicted_crop = db.Column(db.String(100), nullable=True)
     recommended_fertilizer = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=nepal_now)
 
@@ -118,11 +118,11 @@ CROP_TYPES = list(crop_type_le.classes_) if crop_type_le else []
 # Chain-inference crop mapping (Step 1 -> Step 2)
 
 CROP_TO_FERTILIZER_TYPE = {
-   
+
     "rice": "Rice",
     "maize": "Maize",
     "cotton": "Cotton",
-   
+
     "blackgram": "Wheat",
     "chickpea": "Wheat",
     "kidneybeans": "Wheat",
@@ -130,17 +130,17 @@ CROP_TO_FERTILIZER_TYPE = {
     "mothbeans": "Wheat",
     "mungbean": "Wheat",
     "pigeonpeas": "Wheat",
-   
+
     "banana": "Sugarcane",
     "coconut": "Sugarcane",
     "papaya": "Sugarcane",
-    
+
     "apple": "Potato",
     "grapes": "Potato",
-   
+
     "coffee": "Cotton",
     "jute": "Cotton",
-   
+
     "mango": "Tomato",
     "muskmelon": "Tomato",
     "orange": "Tomato",
@@ -319,7 +319,7 @@ def predict_fertilizer():
         return jsonify({"error": f"soil_type must be one of {SOIL_TYPES}"}), 400
 
     soil_enc = int(soil_le.transform([soil_type])[0])
-    
+
     crop_enc = int(crop_type_le.transform([crop_type])[0])
 
     features = [[N, P, K, ph, moisture, temperature, humidity, rainfall, soil_enc, crop_enc]]
@@ -352,7 +352,7 @@ def predict_fertilizer():
     )
     db.session.add(log_entry)
     db.session.commit()
-    
+
     print(
         f"[Log Saved] Complete cycle logged as ID={log_entry.id} | "
         f"Predicted={predicted_crop} -> FertCropType={crop_type} "
@@ -366,7 +366,7 @@ def predict_fertilizer():
         "moisture_source": moisture_source,
         "all_fertilizers": all_fertilizers,
         "predicted_crop": predicted_crop,
-        "fertilizer_crop_type": crop_type, 
+        "fertilizer_crop_type": crop_type,
         "crop_type_mapped": crop_type_mapped,
         "log_id": log_entry.id
     })
