@@ -1,222 +1,47 @@
+AgroSense — Crop and Fertilizer Recommendation System
 
-# AgroSense – Intelligent Crop & Fertilizer Recommendation System
+AgroSense is a final year engineering project that combines IoT hardware and machine learning to help farmers in Nepal decide which crop to grow and which fertilizer to use based on real soil and environmental conditions. Instead of relying on guesswork or generic advice, AgroSense reads live data from sensors, runs it through trained machine learning models, and gives an instant recommendation.
 
-AgroSense is an end-to-end IoT and Machine Learning ecosystem designed to enhance agricultural efficiency. The platform collects real-time microclimate and soil telemetry via an ESP32 edge node, streams it persistently to a cloud-hosted MySQL database on Railway, processes the data through trained Scikit-Learn pipelines to recommend crops and fertilizer configurations, and manages local physical actuators (LCD screens) to provide instantaneous on-field feedback loops.
+What the System Does
 
----
+The system takes soil nutrient levels (Nitrogen, Phosphorus, Potassium), temperature, humidity, soil moisture, soil pH, and rainfall as inputs. It first predicts the most suitable crop for those conditions, then uses that result to recommend the appropriate fertilizer. This two-step chained approach ensures the fertilizer recommendation is always linked to the predicted crop rather than being a separate and unrelated output.
 
-##  System Architecture & Data Flow
+How It Works
 
-The project is engineered with a modular, decoupled architecture split across three distinctive layers:
+Sensors connected to an ESP32 microcontroller read temperature, humidity, and soil moisture automatically. Soil pH and nutrient values (NPK) are entered manually through the dashboard. Rainfall data is fetched automatically from the Open-Meteo weather API for the Pokhara region. All this data is sent from the ESP32 to a Flask backend server over WiFi, where the machine learning models process it and return a recommendation. The result is shown on a Streamlit web dashboard and also displayed on a small LCD screen attached to the ESP32 device itself.
 
-1. **Hardware Ingress & Actuation (ESP32):** Runs an asynchronous, non-blocking control loop. It operates simultaneously as an outbound HTTP Client (polling sensor arrays every 30 seconds and sending data up to the Flask API) and an inbound HTTP Web Server (listening on Port 80 for rendering arrays dispatched by the user frontend).
-2. **Backend API Core & ML Pipeline (Flask):** The central computational proxy. Configured with SQLAlchemy, it manages continuous connection pooling to the Railway MySQL instance. It intercept data packets, records them to database rows, and delivers microsecond-level local inferencing by keeping the `.pkl` serialization pipelines resident in memory.
-3. **Frontend Analytics Panel (Streamlit):** The interactive control console. It tracks user input constraints, queries real-time regional precipitation data using external geospatial APIs (Open-Meteo), pulls the latest physical edge metrics from the MySQL server database, and routes programmatic triggers across the network layer.
+Machine Learning Models
 
----
+Four classification algorithms were trained and compared: Random Forest, Decision Tree, Support Vector Machine, and Naive Bayes. Random Forest was selected as the final model for both crop and fertilizer recommendation. For crop recommendation, the model was trained on 2,200 records covering 22 different crop types using seven input features. It achieved a test accuracy of 99.55% and a weighted F1-score of 0.9955. Stratified 5-fold cross validation was used during training to ensure the model generalizes well to unseen data, which is a stronger evaluation method than a simple single train-test split.
 
-##  Complete Tech Stack
+Hardware Used
 
-### Edge Hardware Node
-* **Microcontroller:** ESP32 (NodeMCU Development Board)
-* **Microclimate Array:** DHT22 (Digital Air Temperature & Relative Humidity)
-* **Soil Analysis:** Capacitive Soil Moisture Sensor v1.2 (Corrosion-resistant analog probe)
-* **Visual Display Output:** 16x2 Character LCD Module equipped with an I2C Backpack interface
+The physical device consists of an ESP32 development board as the main microcontroller, a DHT22 sensor for reading temperature and humidity, a capacitive soil moisture sensor for reading soil water content, an analog pH probe for measuring soil acidity, and a 16x2 LCD screen for displaying the recommendation directly on the device. The system can be powered using a standard 5V adapter or a portable LiPo battery for use in the field.
 
-### Software & Cloud Infrastructure
-* **Web Interfaces:** Streamlit Framework, Requests Networking Suite
-* **API Service Cluster:** Python, Flask, Flask-SQLAlchemy, Joblib, NumPy, Scikit-Learn
-* **Cloud Persistence Layer:** Managed MySQL Database Instance containerized on Railway
-* **Firmware Runtime:** C++, Embedded Arduino Core Engine (PlatformIO / Arduino IDE compliant)
+Software and Tools
 
----
+The entire software stack is open source and free to use. Python was used for all machine learning development. Scikit-learn was used to train and evaluate the models. Flask was used to build the backend API that serves the trained models. Streamlit was used to build the web dashboard. Joblib was used to save and load the trained model files. The ESP32 firmware was written in C++ using the Arduino framework.
 
-##  Hardware Configuration & Pin Map
+Project Structure
 
-Before powering on or flashing the microcontroller node, ensure your physical connections align with the defined pin structures:
+The project is organized into four main parts. The notebooks folder contains the Jupyter notebooks used for training and evaluating the crop and fertilizer models. The models folder contains the saved model and label encoder files. The backend file runs the Flask API server. The dashboard file runs the Streamlit web interface.
 
-| Sensor/Module | Module VCC | Module Pin | ESP32 GPIO | Communication Protocol |
-| :--- | :--- | :--- | :--- | :--- |
-| **DHT22 Sensor** | 3.3V / 5V | DATA | **GPIO 4** | Single-Wire Digital Bus |
-| **Soil Moisture Probe** | 3.3V | AOUT (Analog) | **GPIO 32** | ADC Analog Channel 1 |
-| **16x2 I2C LCD Display** | 5V | SDA | **GPIO 21** | I2C Data Line (Address `0x27`) |
-| **16x2 I2C LCD Display** | 5V | SCL | **GPIO 22** | I2C Clock Line (Address `0x27`) |
+How to Run the Project
 
-### Calibration Constants
-The analog soil moisture tracking algorithm operates via physical boundary mapping. Because capacitive sensors register *inversed values* (higher ADC numbers reflect dry air, lower numbers represent liquid submersion), the edge firmware enforces the following calibrated metrics to scale constraints cleanly between `0%` and `100%`:
-* **`DRY_VALUE = 4095`** (Raw ADC ceiling captured in open environment air)
-* **`WET_VALUE = 2050`** (Raw ADC floor captured when completely submerged in water)
+First clone this repository and install the required Python packages listed in the requirements file. Then start the Flask API server, which will run locally on your machine. Next run the Streamlit dashboard, which will open in your browser. Enter your sensor readings or connect the ESP32 device to fetch them automatically, then click the recommendation button to get your crop and fertilizer prediction.
 
----
+Limitations
 
-## Repository Structural Blueprint
+The training datasets used in this project are sourced from Indian agricultural data and may not fully represent Nepal's soil conditions, rainfall patterns, and temperature profiles. The fertilizer dataset is also very small with only 99 records, so its model results should be treated with caution. Collection of Nepal-specific field data for retraining is planned as a follow-up to this project.
 
-```text
-AgroSense/
-├── backend/
-│   ├── app.py                      # Flask Server, Database Model, & Core Inference Routes
-│   ├── crop_model.pkl              # Trained Multi-Class Crop Classification Model
-│   ├── crop_label_encoder.pkl      # Encoder mapping numerical predictions to Crop Names
-│   ├── fertilizer_model.pkl        # Trained Fertilizer Recommendation Model
-│   ├── soil_type_encoder.pkl       # Label Encoder handling categorical Soil Inputs
-│   ├── crop_type_encoder.pkl       # Label Encoder handling categorical Crop Inputs
-│   └── fertilizer_label_encoder.pkl# Encoder mapping indices to Fertilizer Compound Names
-├── frontend/
-│   └── ui.py                       # Streamlit Multi-Step Processing Application
-└── firmware/
-    └── main.cpp                    # Asynchronous C++ Firmware for the ESP32 Controller
+Future Plans
 
-```
+The immediate next step is to collect soil sample data from multiple districts in Nepal and retrain the models on locally relevant data. Additional plans include deploying the Flask API to a cloud server so the system can work over the internet rather than only on a local WiFi network, adding Nepali language support to the dashboard, and expanding the fertilizer dataset with more crop and soil combinations specific to Nepal.
 
----
+Team
 
-##  Setup & Deployment Protocol
+This project was developed by Sushovan, Akarshan Poudel, Kushal Neupane, and Sachin Kandel as a final year project for the Bachelor of Engineering in Computer Engineering at Pokhara University, School of Engineering.
 
-### 1. Database Provisioning (Railway)
+License
 
-1. Initialize a **MySQL** database resource inside your **Railway Cloud Dashboard**.
-2. Under the Query terminal panel (or through a secure remote client like TablePlus/Beekeeper), confirm or generate the relational persistence table structure:
-```sql
-CREATE TABLE IF NOT EXISTS sensor_readings (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    temperature FLOAT NOT NULL,
-    humidity FLOAT NOT NULL,
-    soil_moisture FLOAT NOT NULL,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-```
-
-
-
-### 2. API Server Execution
-
-1. Navigate to your `/backend` repository folder and install the Python runtime libraries:
-```bash
-pip install flask flask-sqlalchemy mysql-connector-python joblib scikit-learn numpy
-
-```
-
-
-2. Create an environment configuration file named `.env` in the same directory to feed Railway variables safely into the container context without hardcoding strings:
-```env
-MYSQLHOST=your-railway-mysql-host.railway.internal
-MYSQLPORT=3306
-MYSQLUSER=root
-MYSQLPASSWORD=your_railway_database_password
-MYSQLDATABASE=railway
-
-```
-
-
-3. Boot the API backend engine:
-```bash
-python app.py
-
-```
-
-
-*Note: Upon connection, Flask-SQLAlchemy automatically verifies database connectivity and builds missing table assets on Railway seamlessly.*
-
-### 3. Frontend Panel Initiation
-
-1. Enter your `/frontend` directory and add the user interface requirements:
-```bash
-pip install streamlit requests
-
-```
-
-
-2. Initialize the dashboard:
-```bash
-streamlit run ui.py
-
-```
-
-
-3. Use the runtime sidebar configuration element to match your local or remote Flask URL gateway (e.g., `http://localhost:5000` or its public IP address).
-
-### 4. Edge Hardware Flashing
-
-1. Launch `/firmware/main.cpp` using your IDE.
-2. Ensure you have downloaded the core libraries via your package manager:
-* `ArduinoJson` (Minimum version 7.x required)
-* `LiquidCrystal_I2C`
-* `DHT sensor library` (Adafruit)
-
-
-3. Modify network connectivity records to align with your active mobile hotspot setup:
-```cpp
-#define WIFI_SSID     "Your_Hotspot_SSID"
-#define WIFI_PASSWORD "Your_Hotspot_Password"
-
-```
-
-
-4. Adjust the target server address `#define FLASK_URL "http://YOUR_LAPTOP_IP:5000"` to route packets out of your local network space. Upload the binary code to the ESP32.
-
----
-
-##  Core API Integration Specifications
-
-### `GET /health`
-
-Verifies core runtime conditions and exposes dynamic operational metadata matrices to the caller.
-
-* **Response Status Code:** `200 OK`
-* **JSON Output Model:**
-```json
-{
-  "status": "ok",
-  "database": "connected",
-  "soil_types": ["Black", "Clay", "Loamy", "Red", "Sandy"],
-  "crop_types": ["Barley", "Cotton", "Groundnuts", "Maize", "Millets", "Oil seeds", "Paddy", "Pulses", "Sugarcane", "Tobacco", "Wheat"]
-}
-
-```
-
-
-
-### `POST /sensor_data`
-
-Receives transactional telemetry packages fired from edge microcontrollers and persists them inside cloud MySQL table configurations.
-
-* **Payload Format:** `{"temperature": 27.5, "humidity": 62.3, "soil_moisture": 45.8}`
-* **Response Status Code:** `200 OK`
-
-### `GET /sensor_data`
-
-Queries the MySQL tracking array, applies descending chronological ordering loops, and isolates the latest structural snapshot entry to serve UI views.
-
-* **Response Status Code:** `200 OK` (or `404 Not Found` if database tracking records are blank)
-* **JSON Output Model:**
-```json
-{
-  "temperature": 27.5,
-  "humidity": 62.3,
-  "soil_moisture": 45.8,
-  "timestamp": "2026-07-09 15:30:22"
-}
-
-```
-
-
-
-### `POST /predict/crop`
-
-Passes an array vector through the classification algorithm to generate an optimal crop prediction list.
-
-* **Payload Format:** `{"N": 85, "P": 40, "K": 45, "temperature": 26.4, "humidity": 60.1, "ph": 6.8, "rainfall": 180.5}`
-* **Response Model:** Returns the top recommended label string alongside confidence values and a breakdown of alternative probabilities.
-
-### `POST /predict/fertilizer`
-
-Computes fertilizer requirements using chemical arrays and targeted botanical parameters. If the incoming payload omits explicit moisture information, the route intercepts the request, runs a sub-query against the MySQL cloud records, extracts the latest hardware entry, and logs the data dependency source.
-
-* **Payload Format:** `{"N": 40, "P": 20, "K": 10, "ph": 6.2, "temperature": 25.4, "humidity": 58.9, "rainfall": 120.3, "soil_type": "Loamy", "crop_type": "Wheat"}`
-* **Response Status Code:** `200 OK`
-
-```
-***
-
-```
+This project is developed for academic purposes under Pokhara University and is not intended for commercial use.
